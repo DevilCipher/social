@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {validate,istToISO,safeMediaURL,summarize,captionFor,NETWORKS} from '../lib/model.mjs';
+const base=()=>({caption:'A small thought.',networks:['threads'],media:[],overrides:{}});
+test('eleven unique platforms, no TikTok',()=>{assert.equal(new Set(NETWORKS.map(n=>n.id)).size,11);assert.ok(!NETWORKS.some(n=>n.id==='tiktok'));});
+test('IST scheduling is independent of machine timezone',()=>{assert.equal(istToISO('2026-12-01T18:30'),'2026-12-01T13:00:00.000Z');assert.throws(()=>istToISO('wrong'));});
+test('YouTube rejects still images and requires title',()=>{const p={...base(),networks:['youtube'],media:[{id:'1',url:'https://x/image.jpg',type:'image/jpeg'}]};assert.ok(validate(p,true).some(e=>e.includes('MP4')));assert.ok(validate(p,true).some(e=>e.includes('title')));});
+test('per-platform caption overrides are enforced',()=>{const p={...base(),networks:['bluesky'],overrides:{bluesky:'x'.repeat(301)}};assert.equal(captionFor(p,'bluesky').length,301);assert.ok(validate(p,true).some(e=>e.includes('300')));assert.equal(captionFor(p,'threads'),p.caption);});
+test('unconfigured endpoints cannot be used as media proxies',()=>{assert.equal(safeMediaURL('https://store.public.blob.vercel-storage.com/a.jpg','store.public.blob.vercel-storage.com'),true);for(const u of ['http://store.public.blob.vercel-storage.com/a','https://store.public.blob.vercel-storage.com.evil.test/a','https://localhost/a','https://x:pw@store.public.blob.vercel-storage.com/a'])assert.equal(safeMediaURL(u,'store.public.blob.vercel-storage.com'),false);});
+test('accepted and uncertain requests never count as published',()=>{assert.equal(summarize({instagram:{status:'accepted'}}),'processing');assert.equal(summarize({instagram:{status:'uncertain'}}),'needs_review');assert.equal(summarize({instagram:{status:'published'},threads:{status:'failed'}}),'partial');});
+test('drafts may be incomplete but publish needs content and networks',()=>{const p={caption:'',networks:[],media:[]};assert.deepEqual(validate(p),[]);assert.equal(validate(p,true).length,2);});
+test('invalid networks and duplicate targets rejected',()=>{assert.ok(validate({...base(),networks:['invalid']}).length);assert.ok(validate({...base(),networks:['threads','threads']}).length);});
+test('unsupported video targets are clearly rejected',()=>{const p={...base(),networks:['tumblr'],media:[{id:'1',url:'https://x/v.mp4',type:'video/mp4'}]};assert.ok(validate(p,true).some(e=>e.includes('text and images')));});

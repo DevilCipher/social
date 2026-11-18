@@ -1,0 +1,27 @@
+{
+  "name": "heart-social",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "test": "node --test tests/*.test.mjs",
+    "create-owner": "node --env-file-if-exists=.env.local scripts/create-owner.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
+    "@vercel/blob": "2.9.0",
+    "lucide-react": "^0.468.0",
+    "next": "16.4.6",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16"
+  }
+}
