@@ -67,3 +67,66 @@ test('Viewer cannot get a Blob upload token through the raw upload endpoint',asy
 test('cron requires its separate secret even for an Owner',async()=>{assert.equal((await handlers.cron(req('cron',{role:'owner'}))).status,401);});
 test('dispatch stops scheduled posts after approving Admin is disabled',async()=>{const {createDispatcher}=await import('../lib/dispatch.js');let sends=0;const d=createDispatcher({getSQL:()=>sql,publish:async()=>{sends++;return {status:'published'};}});const id=randomUUID();await sql`INSERT INTO heart_posts(id,payload,status,authorized_by,created_by) VALUES(${id},${JSON.stringify(draft(id))}::jsonb,'scheduled',${users.admin.id},${users.admin.id})`;await sql`UPDATE heart_users SET active=false WHERE id=${users.admin.id}`;await d.dispatch(id);assert.equal(sends,0);const rows=await sql`SELECT status FROM heart_posts WHERE id=${id}`;assert.equal(rows[0].status,'pending_review');await sql`UPDATE heart_users SET active=true WHERE id=${users.admin.id}`;});
 test('dispatch claims once and records the authorizing member',async()=>{const {createDispatcher}=await import('../lib/dispatch.js');let sends=0;const d=createDispatcher({getSQL:()=>sql,publish:async()=>{sends++;return {status:'published',url:'https://example.com/post/1'};}});const id=randomUUID();await sql`INSERT INTO heart_posts(id,payload,status,authorized_by,created_by) VALUES(${id},${JSON.stringify(draft(id))}::jsonb,'queued',${users.owner.id},${users.owner.id})`;await d.dispatch(id);await d.dispatch(id);assert.equal(sends,1);const rows=await sql`SELECT status FROM heart_posts WHERE id=${id}`;assert.equal(rows[0].status,'published');});
+
+test('delivery retry is manager-only and claims a confirmed failure once', async () => {
+ const {createDispatcher}=await import('../lib/dispatch.js');
+ const sends=[];
+ const dispatcher=createDispatcher({
+  getSQL:()=>sql,
+  publish:async (post,network)=>{
+   sends.push(network);
+   return {status:'published',id:'new-post'};
+  },
+ });
+ const deliveryHandlers=createHandlers({
+  getSQL:()=>sql,cloudReady:()=>true,
+  connections:async()=>({threads:{connected:true}}),
+  ...dispatcher,
+ });
+ const id=randomUUID();
+ const payload={...draft(id),networks:['threads','linkedin','mastodon']};
+ const results={
+  threads:{status:'failed',retryable:true,attempts:1},
+  linkedin:{status:'published',id:'original-post'},
+  mastodon:{status:'uncertain'},
+ };
+ await sql`INSERT INTO heart_posts(id,payload,status,results,created_by)
+ VALUES(${id},${JSON.stringify(payload)}::jsonb,'needs_review',${JSON.stringify(results)}::jsonb,${users.owner.id})`;
+ const retry=(role,network='threads',cookie)=>deliveryHandlers.postsAction(req('posts/action',{
+  role,cookie,method:'POST',data:{id,network,action:'retry',version:1},
+ }));
+ assert.equal((await retry('owner','mastodon')).status,409);
+ assert.equal((await retry('owner','linkedin')).status,409);
+ // Give the editor visibility into all three destinations so the manager guard is exercised.
+ await sql`UPDATE heart_users SET networks='["threads","linkedin","mastodon"]'::jsonb WHERE id=${users.editor.id}`;
+ const editorCookie='heart_session='+await createSession(sql,users.editor.id);
+ try{assert.equal((await retry('editor','threads',editorCookie)).status,403);}
+ finally{await sql`UPDATE heart_users SET networks='["threads"]'::jsonb WHERE id=${users.editor.id}`;}
+ const responses=await Promise.all([retry('owner'),retry('owner')]);
+ assert.deepEqual(responses.map(response=>response.status).sort(),[200,409]);
+ const [saved]=await sql`SELECT status,results FROM heart_posts WHERE id=${id}`;
+ assert.equal(saved.status,'needs_review');
+ assert.deepEqual(sends,['threads']);
+ assert.equal(saved.results.threads.attempts,2);
+ assert.deepEqual(saved.results.linkedin,results.linkedin);
+ assert.deepEqual(saved.results.mastodon,results.mastodon);
+ const audit=await sql`SELECT details FROM heart_audit WHERE target_id=${id} AND action='post.delivery.retry'`;
+ assert.deepEqual(audit.map(entry=>entry.details),[{network:'threads'}]);
+});
+
+test('refresh marks an interrupted send as unconfirmed and preserves completed destinations', async () => {
+ const {createDispatcher}=await import('../lib/dispatch.js');
+ const dispatcher=createDispatcher({getSQL:()=>sql});
+ const id=randomUUID();
+ const payload={...draft(id),networks:['threads','linkedin']};
+ const results={threads:{status:'publishing',attempts:1},linkedin:{status:'published',id:'existing'}};
+ await sql`INSERT INTO heart_posts(id,payload,status,results,created_by,updated_at)
+ VALUES(${id},${JSON.stringify(payload)}::jsonb,'publishing',${JSON.stringify(results)}::jsonb,
+ ${users.owner.id},NOW()-INTERVAL '6 minutes')`;
+ await dispatcher.refreshPost(id);
+ const [saved]=await sql`SELECT status,results FROM heart_posts WHERE id=${id}`;
+ assert.equal(saved.status,'needs_review');
+ assert.equal(saved.results.threads.status,'uncertain');
+ assert.equal(saved.results.threads.retryable,false);
+ assert.deepEqual(saved.results.linkedin,results.linkedin);
+});
