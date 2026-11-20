@@ -41,3 +41,10 @@ ALTER TABLE heart_media ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES hear
 UPDATE heart_posts SET status='pending_review',scheduled_at=NULL,revision=revision+1
  WHERE status IN ('queued','scheduled') AND authorized_by IS NULL;
 COMMIT;
+
+CREATE TABLE IF NOT EXISTS heart_appearance (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK(singleton),
+  payload JSONB NOT NULL DEFAULT '{}',
+  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0)
+);
+INSERT INTO heart_appearance(singleton) VALUES(TRUE) ON CONFLICT DO NOTHING;

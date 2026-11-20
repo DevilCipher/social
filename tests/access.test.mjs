@@ -27,6 +27,21 @@ after(async()=>{await pg.close();});
 test('passwords are salted, verified, and never stored in plaintext',async()=>{const p='this-is-a-long-password';const a=await hashPassword(p),b=await hashPassword(p);assert.notEqual(a,b);assert.ok(!a.includes(p));assert.equal(await verifyPassword(p,a),true);assert.equal(await verifyPassword('incorrect-password',a),false);});
 test('unauthenticated users cannot list posts, media, users, or accounts',async()=>{for(const [fn,path] of [['postsList','posts'],['mediaList','media'],['teamList','team'],['accounts','accounts']])assert.equal((await call(fn,path)).status,401);});
 test('cross-origin mutations are denied even with a valid Owner cookie',async()=>{assert.equal((await call('postsSave','posts',{role:'owner',method:'POST',data:draft(),originHeader:'https://evil.example'})).status,403);});
+test('workspace appearance is public to read and owner-only to change',async()=>{
+ const old=await call('appearance','appearance');
+ assert.equal(old.body.appearance.name,'Heart Social');
+ const appearance={...old.body.appearance,name:'Campus Studio',palette:'forest'};
+ const save=(role,data,originHeader)=>call('saveAppearance','appearance',{role,method:'POST',data,originHeader});
+ const data={appearance,revision:old.body.revision};
+ assert.equal((await save(undefined,data)).status,401);
+ assert.equal((await save('admin',data)).status,403);
+ assert.equal((await save('owner',data,'https://other.example')).status,403);
+ assert.equal((await save('owner',{...data,appearance:{...appearance,palette:'unknown'}})).status,400);
+ assert.equal((await save('owner',data)).status,200);
+ assert.equal((await save('owner',data)).status,409);
+ const saved=await call('appearance','appearance');
+ assert.deepEqual(saved.body,{appearance,revision:old.body.revision+1});
+});
 test('Viewer cannot create drafts, upload, publish, or manage the team',async()=>{for(const mode of ['draft','submit','publish','schedule'])assert.equal((await call('postsSave','posts',{role:'viewer',method:'POST',data:{...draft(),mode}})).status,403);assert.equal((await call('mediaSave','media',{role:'viewer',method:'POST',data:{}})).status,403);assert.equal((await call('teamList','team',{role:'viewer'})).status,403);});
 test('Editor can save and submit own drafts but cannot publish or schedule',async()=>{
  const p=draft(),saved=await call('postsSave','posts',{role:'editor',method:'POST',data:p});assert.equal(saved.status,200);assert.equal(saved.body.createdBy,users.editor.id);
